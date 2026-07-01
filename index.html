@@ -289,6 +289,19 @@
     color:var(--error);
     font-size:14px;
   }
+  .admin-delete-field{
+    display:none;
+    margin:8px 0 0;
+    padding:8px 10px;
+    border-color:var(--line);
+    background:var(--blush-soft);
+    color:var(--error);
+    font-size:12px;
+  }
+  #admin-panel.show ~ * .admin-delete-field,
+  .admin-mode .admin-delete-field{
+    display:inline-flex;
+  }
   .download-link{
     display:inline-flex;
     align-items:center;
@@ -555,6 +568,8 @@
         <div class="admin-actions">
           <button class="btn-primary" id="toggleEdit" type="button">Редактировать текст</button>
           <button class="btn-ghost" id="saveTextConfig" type="button">Сохранить текст</button>
+          <button class="btn-ghost" id="deleteQuestionMode" type="button">Удалять вопросы</button>
+          <button class="btn-ghost" id="restoreQuestions" type="button">Вернуть вопросы</button>
           <button class="btn-ghost" id="downloadConfiguredHtml" type="button">Скачать HTML</button>
         </div>
         <div class="admin-status" id="textStatus"></div>
@@ -592,13 +607,15 @@ const DEFAULT_CONFIG = {
   deliveryEmail: '',
   webhookUrl: '',
   adminCode: DEFAULT_ADMIN_CODE,
-  texts: {}
+  texts: {},
+  hiddenFields: []
 };
 
 const steps = Array.from(document.querySelectorAll('.step'));
 let current = 0;
 const totalSteps = steps.length;
 let editingEnabled = false;
+let deletingEnabled = false;
 let activeConfig = loadConfig();
 let baselineTextConfig = null;
 
@@ -678,7 +695,8 @@ function clientSafeConfig(){
   return {
     deliveryEmail: activeConfig.deliveryEmail || '',
     webhookUrl: activeConfig.webhookUrl || '',
-    texts: collectTextConfig()
+    texts: collectTextConfig(),
+    hiddenFields: collectHiddenFields()
   };
 }
 
@@ -686,6 +704,59 @@ function saveLocalConfig(partial){
   activeConfig = Object.assign({}, activeConfig, partial);
   localStorage.setItem(BRIEF_CONFIG_KEY, JSON.stringify(activeConfig));
   updateClientLink();
+}
+
+function ensureFieldKeys(){
+  document.querySelectorAll('#brief-form .field').forEach(function(field, index){
+    if(!field.dataset.fieldKey){
+      const input = field.querySelector('[name]');
+      field.dataset.fieldKey = (input ? input.getAttribute('name') : 'field') + '::' + index;
+    }
+  });
+}
+
+function collectHiddenFields(){
+  ensureFieldKeys();
+  return Array.from(document.querySelectorAll('#brief-form .field[data-hidden-by-admin="true"]')).map(function(field){
+    return field.dataset.fieldKey;
+  });
+}
+
+function applyHiddenFields(keys){
+  ensureFieldKeys();
+  const hidden = new Set(keys || []);
+  document.querySelectorAll('#brief-form .field').forEach(function(field){
+    const isHidden = hidden.has(field.dataset.fieldKey);
+    field.dataset.hiddenByAdmin = isHidden ? 'true' : 'false';
+    field.style.display = isHidden ? 'none' : '';
+  });
+}
+
+function installDeleteButtons(){
+  ensureFieldKeys();
+  document.querySelectorAll('#brief-form .field').forEach(function(field){
+    if(field.querySelector('.admin-delete-field')) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'admin-delete-field';
+    btn.textContent = 'Удалить этот вопрос';
+    btn.addEventListener('click', function(){
+      if(!deletingEnabled) return;
+      field.dataset.hiddenByAdmin = 'true';
+      field.style.display = 'none';
+      saveLocalConfig({ hiddenFields: collectHiddenFields() });
+      flash('textStatus', 'Вопрос удалён из клиентской анкеты.');
+    });
+    field.appendChild(btn);
+  });
+}
+
+function setDeleting(on){
+  deletingEnabled = on;
+  document.body.classList.toggle('admin-mode', on);
+  const btn = document.getElementById('deleteQuestionMode');
+  if(btn) btn.textContent = on ? 'Закончить удаление' : 'Удалять вопросы';
+  if(on) installDeleteButtons();
 }
 
 function editableElements(){
@@ -779,6 +850,8 @@ function validateStep(i){
   const stepEl = steps[i];
   const required = stepEl.querySelectorAll('[required]');
   for(const el of required){
+    const parentField = el.closest('.field');
+    if(parentField && parentField.dataset.hiddenByAdmin === 'true') continue;
     if(el.type==='radio'){
       const group = stepEl.querySelectorAll('input[name="' + el.name + '"]');
       const checked = Array.from(group).some(function(r){ return r.checked; });
@@ -975,6 +1048,7 @@ function showAdmin(){
   document.getElementById('form-view').style.display='none';
   document.getElementById('success-view').style.display='none';
   document.getElementById('admin-panel').classList.add('show');
+  installDeleteButtons();
   hydrateAdminFields();
   updateClientLink();
   loadAdmin();
@@ -998,6 +1072,7 @@ if(window.location.hash === '#admin'){
 
 document.getElementById('backToForm').addEventListener('click', function(){
   setEditing(false);
+  setDeleting(false);
   document.getElementById('admin-panel').classList.remove('show');
   document.getElementById('form-view').style.display='block';
 });
@@ -1046,6 +1121,19 @@ document.getElementById('copyClientLink').addEventListener('click', async functi
 
 document.getElementById('toggleEdit').addEventListener('click', function(){
   setEditing(!editingEnabled);
+});
+
+document.getElementById('deleteQuestionMode').addEventListener('click', function(){
+  setDeleting(!deletingEnabled);
+});
+
+document.getElementById('restoreQuestions').addEventListener('click', function(){
+  document.querySelectorAll('#brief-form .field').forEach(function(field){
+    field.dataset.hiddenByAdmin = 'false';
+    field.style.display = '';
+  });
+  saveLocalConfig({ hiddenFields: [] });
+  flash('textStatus', 'Все вопросы возвращены.');
 });
 
 document.getElementById('saveTextConfig').addEventListener('click', function(){
@@ -1126,6 +1214,7 @@ function escapeHtml(s){
 
 baselineTextConfig = snapshotTextConfig();
 applyTextConfig(activeConfig.texts);
+applyHiddenFields(activeConfig.hiddenFields);
 showStep(0);
 updateClientLink();
 
